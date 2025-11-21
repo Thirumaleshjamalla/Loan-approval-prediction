@@ -1,0 +1,171 @@
+import os
+import joblib
+import matplotlib.pyplot as plt
+import zipfile
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
+
+zip_path = r"C:\Users\saipr\Downloads\archive (3).zip"
+extract_dir = r"C:\Users\saipr\Downloads\loan_data"
+
+os.makedirs(extract_dir, exist_ok=True)
+with zipfile.ZipFile(zip_path, "r") as z:
+    z.extractall(extract_dir)
+csv_files = []
+for root, _, files in os.walk(extract_dir):
+    for f in files:
+        if f.lower().endswith(".csv"):
+            csv_files.append(os.path.join(root, f))
+if not csv_files:
+    raise FileNotFoundError(f"No CSV files found inside {zip_path}. "
+                            "Please extract manually and provide a CSV.")
+
+data_path = csv_files[0]
+print("Using CSV:", data_path)
+
+df = pd.read_csv(data_path)
+print("\nDataset shape:", df.shape)
+print("\nColumns:\n", df.columns.tolist())
+print("\nFirst 5 rows:")
+display(df.head())
+
+print("\nMissing values per column:")
+print(df.isnull().sum())
+possible_targets = ["Loan_Status", "loan_status", "LoanStatus", "Loan Status", "Target", "target"]
+target_col = None
+for t in possible_targets:
+    if t in df.columns:
+        target_col = t
+        break
+
+if target_col is None:
+    last_col = df.columns[-1]
+    if df[last_col].nunique() <= 3:
+        target_col = last_col
+        print(f"No standard target found - using last column as target: '{target_col}'")
+    else:
+        raise ValueError("Couldn't automatically find the target column. "
+                         "Please set `target_col` in the script to your target column name.")
+
+print("Target column:", target_col)
+X = df.drop(columns=[target_col])
+y = df[target_col].copy()
+if y.dtype == object:
+    y = y.str.strip()
+    mapping = {"Y": 1, "N": 0, "Yes": 1, "No": 0, "Y\r": 1, "N\r": 0}
+    if set(y.unique()).issubset(set(mapping.keys())):
+        y = y.map(mapping)
+    else:
+        y, uniques = pd.factorize(y)
+        print("Target factorized. Original classes:", uniques)
+print("\nClass distribution:")
+print(pd.Series(y).value_counts(normalize=True, dropna=False))
+plt.figure(figsize=(5,4))
+pd.Series(y).value_counts().plot(kind="bar", title="Target Class Distribution")
+plt.xlabel("Class")
+plt.ylabel("Count")
+plt.show(
+numeric_cols = X.select_dtypes(include=["number"]).columns.tolist()
+categorical_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
+
+print("\nNumeric columns:", numeric_cols)
+print("Categorical columns:", categorical_cols)
+for c in categorical_cols[:]:
+    sample = X[c].dropna().astype(str).head(20).tolist()
+    numeric_like_count = sum(1 for s in sample if s.replace(",", "").replace(".", "").lstrip("-").isdigit())
+    if numeric_like_count >= len(sample) * 0.6:
+        try:
+            X[c] = X[c].str.replace(",", "").astype(float)
+            numeric_cols.append(c)
+            categorical_cols.remove(c)
+            print(f"Converted column {c} to numeric.")
+        except Exception:
+            pass
+numeric_cols = [c for c in numeric_cols if c in X.columns]
+categorical_cols = [c for c in categorical_cols if c in X.columns]numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse=False))
+])
+
+preprocessor = ColumnTransformer(transformers=[
+    ("num", numeric_transformer, numeric_cols),
+    ("cat", categorical_transformer, categorical_cols)
+], remainder="drop")
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y if len(np.unique(y))>1 else None
+)
+
+print("\nTrain shape:", X_train.shape, "Test shape:", X_test.shape)
+pipe_lr = Pipeline(steps=[
+    ("preproc", preprocessor),
+    ("clf", LogisticRegression(max_iter=1000, random_state=42))
+])
+
+    ("preproc", preprocessor),
+    ("clf", RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1))
+])
+print("\nTraining Logistic Regression...")
+pipe_lr.fit(X_train, y_train)
+print("Training Random Forest...")
+pipe_rf.fit(X_train, y_train
+def evaluate(model, Xt, yt, model_name="Model"):
+    y_pred = model.predict(Xt)y_proba = None
+    if hasattr(model, "predict_proba"):
+        try:
+            y_proba = model.predict_proba(Xt)[:, 1]
+        except Exception:
+            y_proba = None
+    acc = accuracy_score(yt, y_pred)
+    print(f"\n--- {model_name} Evaluation ---")
+    print("Accuracy:", acc)
+    print("Classification Report:")
+    print(classification_report(yt, y_pred))
+    print("Confusion Matrix:\n", confusion_matrix(yt, y_pred))
+    if y_proba is not None and len(np.unique(yt)) == 2:
+        auc = roc_auc_score(yt, y_proba)
+        print("ROC AUC:", auc)
+        fpr, tpr, _ = roc_curve(yt, y_proba)
+        plt.figure(figsize=(6,4))
+        plt.plot(fpr, tpr, label=f"{model_name} (AUC={auc:.3f})")
+        plt.plot([0,1],[0,1],'k--')
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(f"ROC Curve - {model_name}")
+        plt.legend()
+        plt.show()
+
+evaluate(pipe_lr, X_test, y_test, "Logistic Regression")
+evaluate(pipe_rf, X_test, y_test, "Random Forest")
+def get_model_score(model, Xt, yt):
+    y_pred = model.predict(Xt)
+    acc = accuracy_score(yt, y_pred)if hasattr(model, "predict_proba") and len(np.unique(yt)) == 2:
+        try:
+            proba = model.predict_proba(Xt)[:, 1]
+            auc = roc_auc_score(yt, proba)
+            return {"acc": acc, "auc": auc}
+        except Exception:
+            return {"acc": acc, "auc": None}
+    return {"acc": acc, "auc": None}
+
+score_lr = get_model_score(pipe_lr, X_test, y_test)
+score_rf = get_model_score(pipe_rf, X_test, y_test)
+print("\nScores:\n LogisticRegression:", score_lr, "\n RandomForest:", score_rf)
